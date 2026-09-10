@@ -1,68 +1,60 @@
 document.addEventListener("DOMContentLoaded", () => {
-  // Initialize Lucide icons
   lucide.createIcons();
 
   let currentVideoData = null;
   let currentAudioFile = null;
   let fullTranscriptText = "";
+  let isSeeking = false;
 
   // DOM Elements
-  const youtubeUrlInput = document.getElementById("youtubeUrl");
+  const youtubeUrl = document.getElementById("youtubeUrl");
   const fetchBtn = document.getElementById("fetchBtn");
-  const previewSection = document.getElementById("previewSection");
-  const videoThumbnail = document.getElementById("videoThumbnail");
-  const videoTitle = document.getElementById("videoTitle");
-  const videoUploader = document.getElementById("videoUploader");
-  const videoDuration = document.getElementById("videoDuration");
-
   const oneClickBtn = document.getElementById("oneClickBtn");
-  const downloadAudioBtn = document.getElementById("downloadAudioBtn");
-  const startTranscribeBtn = document.getElementById("startTranscribeBtn");
 
-  const audioPlaceholder = document.getElementById("audioPlaceholder");
-  const audioPlayerWrapper = document.getElementById("audioPlayerWrapper");
-  const audioPlayer = document.getElementById("audioPlayer");
-  const audioStatusBadge = document.getElementById("audioStatusBadge");
-  const audioMetaInfo = document.getElementById("audioMetaInfo");
-  const statusLog = document.getElementById("statusLog");
+  const playerBackdrop = document.getElementById("playerBackdrop");
+  const cinemaTitle = document.getElementById("cinemaTitle");
+  const cinemaSubtitle = document.getElementById("cinemaSubtitle");
+  const audioElement = document.getElementById("audioElement");
 
-  const transcriptSection = document.getElementById("transcriptSection");
+  const playPauseBtn = document.getElementById("playPauseBtn");
+  const playIcon = document.getElementById("playIcon");
+  const timeBadge = document.getElementById("timeBadge");
+  const seekBar = document.getElementById("seekBar");
+  const totalDurationLabel = document.getElementById("totalDurationLabel");
+  const muteBtn = document.getElementById("muteBtn");
+  const shareBtn = document.getElementById("shareBtn");
+  const likeBtn = document.getElementById("likeBtn");
+
+  const statusMessage = document.getElementById("statusMessage");
   const transcriptContent = document.getElementById("transcriptContent");
-  const copyTranscriptBtn = document.getElementById("copyTranscriptBtn");
-  const copyBtnText = document.getElementById("copyBtnText");
+  const copyBtn = document.getElementById("copyBtn");
+  const copyBtnLabel = document.getElementById("copyBtnLabel");
   const downloadTxtBtn = document.getElementById("downloadTxtBtn");
 
   const optDiarization = document.getElementById("optDiarization");
   const optTimestamp = document.getElementById("optTimestamp");
-  const languagePrompt = document.getElementById("languagePrompt");
 
-  function setStatus(message, isError = false) {
-    statusLog.textContent = message;
-    if (isError) {
-      statusLog.className = "text-rose-400 min-h-[48px] flex items-center";
-    } else {
-      statusLog.className = "text-slate-300 min-h-[48px] flex items-center";
-    }
+  function formatTime(seconds) {
+    if (isNaN(seconds) || seconds === 0) return "00:00";
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   }
 
-  function formatBytes(bytes) {
-    if (!bytes || bytes === 0) return "0 Bytes";
-    const k = 1024;
-    const sizes = ["Bytes", "KB", "MB", "GB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  function setStatus(msg, isError = false) {
+    statusMessage.textContent = msg;
+    statusMessage.className = isError
+      ? "flex-1 font-mono text-rose-400 text-[11px] truncate text-right font-semibold"
+      : "flex-1 font-mono text-cyan-400 text-[11px] truncate text-right";
   }
 
-  // 1. Fetch Video Info
-  fetchBtn.addEventListener("click", async () => {
-    const url = youtubeUrlInput.value.trim();
-    if (!url) {
-      alert("유튜브 URL을 입력해주세요.");
-      return;
-    }
+  // 1. Fetch Video Metadata
+  async function fetchVideoInfo() {
+    const url = youtubeUrl.value.trim();
+    if (!url) return alert("유튜브 URL을 입력해주세요.");
 
     fetchBtn.disabled = true;
-    fetchBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full"></span> <span>조회 중...</span>`;
+    fetchBtn.innerHTML = `<span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full"></span><span>로드 중...</span>`;
     setStatus("영상 정보를 불러오는 중입니다...");
 
     try {
@@ -73,238 +65,243 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || "영상 정보를 가져오지 못했습니다.");
-      }
+      if (!res.ok) throw new Error(data.detail || "영상 정보 조회 실패");
 
       currentVideoData = data;
-      currentAudioFile = null;
 
-      // Update UI
-      videoThumbnail.src = data.thumbnail || "";
-      videoTitle.textContent = data.title;
-      videoUploader.textContent = data.uploader;
-      videoDuration.textContent = data.duration_string || `${data.duration}초`;
+      // Update Cinematic Player
+      if (data.thumbnail) {
+        playerBackdrop.style.backgroundImage = `url('${data.thumbnail}')`;
+      }
+      cinemaTitle.textContent = data.title || "YOUTUBE VIDEO";
+      cinemaSubtitle.textContent = `${data.uploader || "CHANNEL"} • ${data.duration_string || formatTime(data.duration)}`;
+      totalDurationLabel.textContent = data.duration_string || formatTime(data.duration);
 
-      previewSection.classList.remove("hidden");
-      transcriptSection.classList.add("hidden");
-      startTranscribeBtn.disabled = true;
-
-      // Reset Audio Player to placeholder state
-      audioPlaceholder.classList.remove("hidden");
-      audioPlayerWrapper.classList.add("hidden");
-      audioPlayer.removeAttribute("src");
-      audioPlayer.load();
-
-      audioStatusBadge.textContent = "다운로드 대기";
-      audioStatusBadge.className = "text-[11px] px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700";
-      audioMetaInfo.innerHTML = `<span>파일명: -</span><span>용량: -</span>`;
-
-      setStatus("영상 조회가 완료되었습니다. '오디오 다운로드 & STT 한 번에 실행'을 눌러주세요.");
+      setStatus("영상 로드 완료! [오디오 다운로드 & STT 변환]을 눌러주세요.");
     } catch (err) {
       setStatus(`오류: ${err.message}`, true);
     } finally {
       fetchBtn.disabled = false;
-      fetchBtn.innerHTML = `<i data-lucide="search" class="w-4 h-4"></i><span>영상 조회</span>`;
-      lucide.createIcons();
-    }
-  });
-
-  // Core Download Audio Logic
-  async function performAudioDownload() {
-    const url = youtubeUrlInput.value.trim();
-    if (!url) return null;
-
-    downloadAudioBtn.disabled = true;
-    oneClickBtn.disabled = true;
-    downloadAudioBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-slate-300 border-t-transparent rounded-full"></span> <span>다운로드 중...</span>`;
-    setStatus("YouTube에서 고음질 오디오 스트림을 다운로드 및 MP3로 변환 중입니다...");
-    audioStatusBadge.textContent = "다운로드 중...";
-    audioStatusBadge.className = "text-[11px] px-2.5 py-0.5 rounded-full bg-amber-900/60 text-amber-300 border border-amber-700/60 animate-pulse";
-
-    try {
-      const res = await fetch("/api/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || "오디오 다운로드에 실패했습니다.");
-      }
-
-      currentAudioFile = data.filename;
-
-      // Show audio player smoothly
-      audioPlaceholder.classList.add("hidden");
-      audioPlayerWrapper.classList.remove("hidden");
-      audioPlayer.src = data.audio_url;
-      audioPlayer.load();
-
-      audioStatusBadge.textContent = "오디오 준비 완료";
-      audioStatusBadge.className = "text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-900/60 text-emerald-300 border border-emerald-700/60";
-
-      audioMetaInfo.innerHTML = `
-        <span>파일명: <b class="text-slate-300 font-mono">${data.filename}</b></span>
-        <span>용량: <b class="text-slate-300">${formatBytes(data.file_size)}</b></span>
-      `;
-
-      startTranscribeBtn.disabled = false;
-      setStatus("오디오 준비 완료! 플레이어로 재생하거나 Gemini STT를 실행하세요.");
-      return currentAudioFile;
-    } catch (err) {
-      setStatus(`오디오 다운로드 오류: ${err.message}`, true);
-      audioStatusBadge.textContent = "다운로드 실패";
-      audioStatusBadge.className = "text-[11px] px-2.5 py-0.5 rounded-full bg-rose-900/60 text-rose-300 border border-rose-700/60";
-      throw err;
-    } finally {
-      downloadAudioBtn.disabled = false;
-      oneClickBtn.disabled = false;
-      downloadAudioBtn.innerHTML = `<i data-lucide="download" class="w-4 h-4 text-slate-400"></i><span>1단계: 오디오만 다운로드</span>`;
+      fetchBtn.innerHTML = `<i data-lucide="search" class="w-3.5 h-3.5"></i><span>영상 로드</span>`;
       lucide.createIcons();
     }
   }
 
-  // Step 1 Click
-  downloadAudioBtn.addEventListener("click", async () => {
-    try {
-      await performAudioDownload();
-    } catch (e) {
-      console.error(e);
+  fetchBtn.addEventListener("click", fetchVideoInfo);
+
+  // 2. Audio Player Controls
+  playPauseBtn.addEventListener("click", () => {
+    if (!audioElement.src || audioElement.src === window.location.href) {
+      if (currentAudioFile) {
+        audioElement.src = `/downloads/${currentAudioFile}`;
+      } else {
+        return alert("먼저 오디오를 다운로드해주세요.");
+      }
+    }
+
+    if (audioElement.paused) {
+      audioElement.play();
+    } else {
+      audioElement.pause();
     }
   });
 
-  // Core STT Transcription Logic
-  async function performTranscription() {
-    if (!currentAudioFile) {
-      alert("먼저 오디오를 다운로드해주세요.");
-      return;
+  audioElement.addEventListener("play", () => {
+    playPauseBtn.innerHTML = `<i data-lucide="pause" class="w-4 h-4 fill-white"></i>`;
+    lucide.createIcons();
+  });
+
+  audioElement.addEventListener("pause", () => {
+    playPauseBtn.innerHTML = `<i data-lucide="play" class="w-4 h-4 fill-white"></i>`;
+    lucide.createIcons();
+  });
+
+  audioElement.addEventListener("timeupdate", () => {
+    if (!isSeeking && audioElement.duration) {
+      const current = audioElement.currentTime;
+      const duration = audioElement.duration;
+      timeBadge.textContent = formatTime(current);
+      seekBar.value = (current / duration) * 100;
+    }
+  });
+
+  audioElement.addEventListener("loadedmetadata", () => {
+    totalDurationLabel.textContent = formatTime(audioElement.duration);
+  });
+
+  seekBar.addEventListener("input", () => {
+    isSeeking = true;
+    if (audioElement.duration) {
+      const seekTo = (seekBar.value / 100) * audioElement.duration;
+      timeBadge.textContent = formatTime(seekTo);
+    }
+  });
+
+  seekBar.addEventListener("change", () => {
+    if (audioElement.duration) {
+      audioElement.currentTime = (seekBar.value / 100) * audioElement.duration;
+    }
+    isSeeking = false;
+  });
+
+  muteBtn.addEventListener("click", () => {
+    audioElement.muted = !audioElement.muted;
+    muteBtn.innerHTML = audioElement.muted
+      ? `<i data-lucide="volume-x" class="w-4 h-4 text-rose-400"></i>`
+      : `<i data-lucide="volume-2" class="w-4 h-4"></i>`;
+    lucide.createIcons();
+  });
+
+  shareBtn.addEventListener("click", () => {
+    const url = youtubeUrl.value.trim();
+    if (url) {
+      navigator.clipboard.writeText(url);
+      alert("영상 URL이 클립보드에 복사되었습니다!");
+    }
+  });
+
+  likeBtn.addEventListener("click", () => {
+    likeBtn.classList.toggle("text-rose-500");
+    likeBtn.classList.toggle("bg-rose-950/40");
+  });
+
+  // 3. Audio Download & STT Workflow
+  async function downloadAudio() {
+    const url = youtubeUrl.value.trim();
+    if (!url) throw new Error("유튜브 URL을 입력해주세요.");
+
+    setStatus("유튜브에서 고음질 오디오 다운로드 및 MP3 인코딩 중...");
+    const res = await fetch("/api/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "오디오 다운로드 실패");
+
+    currentAudioFile = data.filename;
+    audioElement.src = data.audio_url;
+    audioElement.load();
+
+    if (data.title && !currentVideoData) {
+      cinemaTitle.textContent = data.title;
     }
 
-    startTranscribeBtn.disabled = true;
-    oneClickBtn.disabled = true;
-    startTranscribeBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full"></span> <span>Gemini 변환 중...</span>`;
-    
-    transcriptSection.classList.remove("hidden");
+    return currentAudioFile;
+  }
+
+  async function startTranscription() {
+    if (!currentAudioFile) throw new Error("오디오 파일이 없습니다.");
+
+    setStatus("Gemini 3.5 Transcribe 모델을 호출하여 실시간 전사 중...");
     transcriptContent.textContent = "Gemini 3.5 모델에 연결하여 트랜스크립트를 생성 중입니다...\n";
     fullTranscriptText = "";
-    setStatus("Gemini 3.5 Transcribe 모델을 호출하여 음성을 인식 중입니다...");
 
-    try {
-      const response = await fetch("/api/transcribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: currentAudioFile,
-          diarization: optDiarization.checked,
-          word_timestamp: optTimestamp.checked,
-          language_prompt: languagePrompt.value.trim(),
-        }),
-      });
+    const response = await fetch("/api/transcribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: currentAudioFile,
+        diarization: optDiarization.checked,
+        word_timestamp: optTimestamp.checked,
+      }),
+    });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || "트랜스크립션 요청에 실패했습니다.");
-      }
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || "트랜스크립션 요청 실패");
+    }
 
-      transcriptContent.textContent = "";
+    transcriptContent.textContent = "";
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop(); // keep partial chunk
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop();
 
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const dataStr = line.slice(6);
-            try {
-              const data = JSON.parse(dataStr);
-              if (data.status === "progress") {
-                setStatus(data.message);
-              } else if (data.status === "text") {
-                fullTranscriptText += data.chunk;
-                transcriptContent.textContent = fullTranscriptText;
-                transcriptContent.scrollTop = transcriptContent.scrollHeight;
-              } else if (data.status === "done") {
-                setStatus("🎉 트랜스크립션이 성공적으로 완료되었습니다!");
-              } else if (data.status === "error") {
-                setStatus(`Gemini 오류: ${data.message}`, true);
-              }
-            } catch (e) {
-              console.error("SSE parse error", e);
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const dataStr = line.slice(6);
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.status === "progress") {
+              setStatus(data.message);
+            } else if (data.status === "text") {
+              fullTranscriptText += data.chunk;
+              transcriptContent.textContent = fullTranscriptText;
+              transcriptContent.scrollTop = transcriptContent.scrollHeight;
+            } else if (data.status === "done") {
+              setStatus("🎉 Gemini 3.5 STT 전사가 완료되었습니다!");
+            } else if (data.status === "error") {
+              setStatus(`오류: ${data.message}`, true);
             }
-          }
+          } catch (e) {}
         }
       }
-    } catch (err) {
-      setStatus(`트랜스크립션 처리 실패: ${err.message}`, true);
-      transcriptContent.textContent += `\n[오류 발생] ${err.message}`;
-    } finally {
-      startTranscribeBtn.disabled = false;
-      oneClickBtn.disabled = false;
-      startTranscribeBtn.innerHTML = `<i data-lucide="mic" class="w-4 h-4"></i><span>2단계: Gemini STT 트랜스크립트 추출</span>`;
-      lucide.createIcons();
     }
   }
 
-  // Step 2 Click
-  startTranscribeBtn.addEventListener("click", async () => {
-    try {
-      await performTranscription();
-    } catch (e) {
-      console.error(e);
-    }
-  });
-
-  // One-Click Flow: Download Audio + Transcribe automatically
   oneClickBtn.addEventListener("click", async () => {
+    oneClickBtn.disabled = true;
+    oneClickBtn.innerHTML = `<span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full"></span><span>처리 중...</span>`;
+
     try {
-      if (!currentAudioFile) {
-        await performAudioDownload();
+      if (!currentVideoData) {
+        await fetchVideoInfo();
       }
-      await performTranscription();
-    } catch (e) {
-      console.error("One-click flow failed", e);
+      await downloadAudio();
+      await startTranscription();
+    } catch (err) {
+      setStatus(`실행 오류: ${err.message}`, true);
+      transcriptContent.textContent += `\n[오류] ${err.message}`;
+    } finally {
+      oneClickBtn.disabled = false;
+      oneClickBtn.innerHTML = `<i data-lucide="zap" class="w-3.5 h-3.5 text-amber-300"></i><span>오디오 다운로드 & STT 변환</span>`;
+      lucide.createIcons();
     }
   });
 
-  // 4. Copy to Clipboard
-  copyTranscriptBtn.addEventListener("click", () => {
-    if (!fullTranscriptText) {
-      alert("복사할 트랜스크립트 내용이 없습니다.");
-      return;
-    }
+  // 4. Copy & Download Text
+  copyBtn.addEventListener("click", () => {
+    if (!fullTranscriptText) return alert("복사할 텍스트가 없습니다.");
     navigator.clipboard.writeText(fullTranscriptText).then(() => {
-      copyBtnText.textContent = "복사 완료!";
-      setTimeout(() => {
-        copyBtnText.textContent = "복사하기";
-      }, 2000);
+      copyBtnLabel.textContent = "복사 완료!";
+      setTimeout(() => (copyBtnLabel.textContent = "복사하기"), 2000);
     });
   });
 
-  // 5. Download as TXT
   downloadTxtBtn.addEventListener("click", () => {
-    if (!fullTranscriptText) {
-      alert("다운로드할 트랜스크립트 내용이 없습니다.");
-      return;
-    }
+    if (!fullTranscriptText) return alert("다운로드할 텍스트가 없습니다.");
     const blob = new Blob([fullTranscriptText], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const videoTitleStr = currentVideoData?.title ? currentVideoData.title.replace(/[\/\\?%*:|"<>]/g, "_") : "transcript";
+    const title = currentVideoData?.title ? currentVideoData.title.replace(/[\/\\?%*:|"<>]/g, "_") : "transcript";
     a.href = url;
-    a.download = `${videoTitleStr}_transcript.txt`;
+    a.download = `${title}_transcript.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   });
+
+  // Carousel Dot interaction
+  document.querySelectorAll(".carousel-dot").forEach((dot) => {
+    dot.addEventListener("click", (e) => {
+      document.querySelectorAll(".carousel-dot").forEach((d) => {
+        d.className = "carousel-dot w-2 h-2 rounded-full bg-slate-700 hover:bg-indigo-400 transition-all cursor-pointer";
+      });
+      e.target.className = "carousel-dot w-5 h-2 rounded-full bg-indigo-500 cursor-pointer";
+    });
+  });
+
+  // Automatically load initial demo video metadata on startup
+  fetchVideoInfo();
 });

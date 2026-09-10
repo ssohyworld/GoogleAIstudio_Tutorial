@@ -1,3 +1,11 @@
+/* Custom Cinematic Video & Audio Player Styles */
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@200;300;400;600;700&display=swap');
+
+.font-cinema {
+  font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  letter-spacing: 0.25em;
+}
+
 /* Custom Scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
@@ -5,7 +13,6 @@
 }
 ::-webkit-scrollbar-track {
   background: rgba(15, 23, 42, 0.6);
-  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb {
   background: rgba(99, 102, 241, 0.4);
@@ -15,26 +22,65 @@
   background: rgba(99, 102, 241, 0.7);
 }
 
-/* Audio Player Dark styling */
-audio::-webkit-media-controls-panel {
-  background-color: #0f172a;
-}
-audio::-webkit-media-controls-current-time-display,
-audio::-webkit-media-controls-time-remaining-display {
-  color: #94a3b8;
+/* Custom Range Input (Scrub Bar) */
+input[type=range].scrub-slider {
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
 }
 
-/* Pulse Glow Animation */
-@keyframes glow {
-  0%, 100% {
-    opacity: 0.6;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.9;
-    transform: scale(1.02);
-  }
+input[type=range].scrub-slider:focus {
+  outline: none;
 }
-.animate-glow {
-  animation: glow 3s ease-in-out infinite;
+
+input[type=range].scrub-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  transition: all 0.2s;
+}
+
+input[type=range].scrub-slider:hover::-webkit-slider-runnable-track {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+input[type=range].scrub-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 12px;
+  width: 12px;
+  border-radius: 50%;
+  background: #60a5fa;
+  box-shadow: 0 0 10px rgba(96, 165, 250, 0.8);
+  margin-top: -4px;
+  transition: transform 0.1s ease;
+}
+
+input[type=range].scrub-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.3);
+  background: #38bdf8;
+}
+
+/* Dots animation */
+.dot-indicator {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.dot-indicator.active {
+  width: 20px;
+  background-color: #6366f1;
+  border-radius: 9999px;
+}
+
+/* Glassmorphism Card */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Glow effects */
+.cinema-glow {
+  box-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.8), 0 0 30px 0 rgba(79, 70, 229, 0.15);
 }
