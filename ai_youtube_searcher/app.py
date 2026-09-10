@@ -13,8 +13,9 @@ from pydantic import BaseModel
 import yt_dlp
 from google import genai
 from google.genai import types
+from youtube_transcript_api import YouTubeTranscriptApi
 
-app = FastAPI(title="AI YouTube Searcher (TubeBuddy AI)")
+app = FastAPI(title="AI YouTube Searcher (TubeBuddy AI Pro)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,14 +45,16 @@ CSV_HEADERS = [
     "uploader",
     "duration",
     "duration_string",
+    "source_type",
     "created_at",
     "transcript",
-    "chapters_json"
+    "chapters_json",
+    "bookmarks_json"
 ]
 
 
 def load_transcripts_from_csv() -> dict:
-    """CSV 파일에서 저장된 모든 트랜스크립트와 챕터 데이터를 읽어옵니다."""
+    """CSV 파일에서 저장된 모든 트랜스크립트와 챕터/북마크 데이터를 읽어옵니다."""
     cache = {}
     if not os.path.exists(CSV_FILE):
         return cache
@@ -62,8 +65,13 @@ def load_transcripts_from_csv() -> dict:
                 vid = row.get("video_id")
                 if vid:
                     chapters = []
+                    bookmarks = []
                     try:
                         chapters = json.loads(row.get("chapters_json", "[]"))
+                    except Exception:
+                        pass
+                    try:
+                        bookmarks = json.loads(row.get("bookmarks_json", "[]"))
                     except Exception:
                         pass
                     cache[vid] = {
@@ -73,9 +81,11 @@ def load_transcripts_from_csv() -> dict:
                         "uploader": row.get("uploader", ""),
                         "duration": int(row.get("duration", 0) or 0),
                         "duration_string": row.get("duration_string", ""),
+                        "source_type": row.get("source_type", "Gemini 3.5 STT"),
                         "created_at": row.get("created_at", ""),
                         "transcript": row.get("transcript", ""),
                         "chapters": chapters,
+                        "bookmarks": bookmarks,
                     }
     except Exception as e:
         print(f"Error loading CSV cache: {e}")
@@ -102,6 +112,7 @@ def save_transcript_to_csv(data: dict):
             pass
 
     chapters_str = json.dumps(data.get("chapters", []), ensure_ascii=False)
+    bookmarks_str = json.dumps(data.get("bookmarks", []), ensure_ascii=False)
     row_dict = {
         "video_id": vid,
         "url": data.get("url", ""),
@@ -109,9 +120,11 @@ def save_transcript_to_csv(data: dict):
         "uploader": data.get("uploader", ""),
         "duration": data.get("duration", 0),
         "duration_string": data.get("duration_string", ""),
+        "source_type": data.get("source_type", "Gemini 3.5 STT"),
         "created_at": data.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "transcript": data.get("transcript", ""),
         "chapters_json": chapters_str,
+        "bookmarks_json": bookmarks_str,
     }
     existing_rows[vid] = row_dict
 
@@ -126,6 +139,41 @@ def save_transcript_to_csv(data: dict):
 TRANSCRIPT_CACHE = load_transcripts_from_csv()
 
 
+def extract_youtube_subtitles_plugin(video_id: str) -> Optional[str]:
+    """유튜브 자막 플러그인(API)을 통해 고속/무료로 타임스탬프 자막을 가져옵니다."""
+    try:
+        ytt = YouTubeTranscriptApi()
+        transcript_list = ytt.list(video_id=video_id)
+        # Try Korean first, then English, then any available language
+        transcript_obj = None
+        try:
+            transcript_obj = transcript_list.find_transcript(["ko", "ko-KR"])
+        except Exception:
+            try:
+                transcript_obj = transcript_list.find_transcript(["en", "en-US"])
+            except Exception:
+                # Get the first available transcript
+                for t in transcript_list:
+                    transcript_obj = t
+                    break
+
+        if transcript_obj:
+            data = transcript_obj.fetch()
+            formatted_lines = []
+            for item in data:
+                start_sec = int(item.start)
+                m = start_sec // 60
+                s = start_sec % 60
+                ts = f"[{m:02d}:{s:02d}]"
+                text = item.text.replace("\n", " ").strip()
+                if text:
+                    formatted_lines.append(f"{ts} {text}")
+            return "\n".join(formatted_lines)
+    except Exception as e:
+        print(f"YouTube Subtitle Plugin fetch note for {video_id}: {e}")
+    return None
+
+
 class VideoUrlRequest(BaseModel):
     url: str
 
@@ -134,6 +182,13 @@ class AskQuestionRequest(BaseModel):
     video_id: str
     question: str
     transcript: Optional[str] = ""
+
+
+class BookmarkRequest(BaseModel):
+    video_id: str
+    timestamp_seconds: int
+    timestamp_str: str
+    memo: str
 
 
 @app.get("/")
@@ -203,96 +258,135 @@ async def get_video_info(request: VideoUrlRequest):
 
 @app.post("/api/process_video")
 async def process_video(request: VideoUrlRequest):
-    """오디오 다운로드 및 Gemini 3.5 Transcribe STT + 챕터 추출 (CSV 캐시 확인 후 즉시 반환)"""
+    """
+    3단계 하이브리드 트랜스크립트 추출 파이프라인:
+    1단계: CSV 데이터베이스 캐시 확인 (0.01초)
+    2단계: 유튜브 자막 플러그인 API 추출 (0.2초, $0)
+    3단계: Gemini 3.5 Transcribe 고정밀 음성 STT (자막 없는 영상 대상)
+    """
     url = request.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="유튜브 URL을 입력해주세요.")
 
     video_id = extract_youtube_id(url)
+    api_key = os.environ.get("GEMINI_API_KEY")
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            # 1. Check if already cached in CSV
+            # 1단계: CSV 캐시 최신 동기화 및 확인
+            TRANSCRIPT_CACHE.update(load_transcripts_from_csv())
             if video_id and video_id in TRANSCRIPT_CACHE and TRANSCRIPT_CACHE[video_id].get("transcript"):
                 cached = TRANSCRIPT_CACHE[video_id]
-                yield f"data: {json.dumps({'status': 'progress', 'message': '⚡ 이미 저장된 트랜스크립트(CSV 데이터베이스)에서 즉시 불러왔습니다!'})}\n\n"
-                yield f"data: {json.dumps({'status': 'done', 'video_id': video_id, 'transcript': cached['transcript'], 'chapters': cached['chapters'], 'cached': True, 'created_at': cached.get('created_at', '')})}\n\n"
+                yield f"data: {json.dumps({'status': 'progress', 'message': '⚡ CSV 데이터베이스 캐시에서 0.1초 만에 불러왔습니다!'})}\n\n"
+                yield f"data: {json.dumps({'status': 'done', 'video_id': video_id, 'transcript': cached['transcript'], 'chapters': cached['chapters'], 'bookmarks': cached.get('bookmarks', []), 'source_type': 'CSV 캐시', 'cached': True, 'title': cached['title'], 'uploader': cached['uploader']})}\n\n"
                 return
 
-            # 2. If not cached, proceed to download and transcribe
-            api_key = os.environ.get("GEMINI_API_KEY")
-            if not api_key:
-                yield f"data: {json.dumps({'status': 'error', 'message': 'GEMINI_API_KEY가 설정되지 않았습니다.'})}\n\n"
-                return
+            # 영상 메타데이터 사전 획득
+            video_title = "YouTube Video"
+            video_uploader = "YouTube"
+            video_duration = 0
+            video_duration_str = ""
 
-            yield f"data: {json.dumps({'status': 'progress', 'message': '1/3 유튜브 오디오 스트림 추출 중...'})}\n\n"
+            try:
+                with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    video_title = info.get("title", "YouTube Video")
+                    video_uploader = info.get("uploader", "YouTube")
+                    video_duration = info.get("duration", 0)
+                    video_duration_str = info.get("duration_string", "")
+            except Exception:
+                pass
 
-            file_id = str(uuid.uuid4())[:8]
-            out_template = os.path.join(DOWNLOAD_DIR, f"{file_id}_%(id)s.%(ext)s")
-
-            ydl_opts = {
-                "format": "bestaudio/best",
-                "outtmpl": out_template,
-                "quiet": True,
-                "no_warnings": True,
-            }
-            if FFMPEG_PATH:
-                ydl_opts["ffmpeg_location"] = CONDA_FFMPEG_DIR
-                ydl_opts["postprocessors"] = [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }]
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                expected_filename = ydl.prepare_filename(info)
-                if FFMPEG_PATH:
-                    base, _ = os.path.splitext(expected_filename)
-                    if os.path.exists(f"{base}.mp3"):
-                        expected_filename = f"{base}.mp3"
-
-            actual_vid = info.get("id") or video_id
-            file_path = expected_filename
-            mime_type = "audio/mp3" if file_path.endswith(".mp3") else "audio/mp4"
-
-            yield f"data: {json.dumps({'status': 'progress', 'message': '2/3 Gemini 3.5 Transcribe로 음성 전사 중...'})}\n\n"
-
-            client = genai.Client(api_key=api_key)
-            with open(file_path, "rb") as f:
-                audio_bytes = f.read()
-
-            audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
-            stt_prompt = (
-                "Transcribe this entire audio in detail. "
-                "Include speaker tags and precise timestamps for every sentence in [MM:SS] format. "
-                "Output clear timestamps so moments can be accurately navigated."
-            )
+            # 2단계: 유튜브 공식 자막 플러그인 확인
+            yield f"data: {json.dumps({'status': 'progress', 'message': '1/3 유튜브 자막 플러그인에서 타임스탬프 추출 시도 중...'})}\n\n"
+            plugin_transcript = extract_youtube_subtitles_plugin(video_id) if video_id else None
 
             transcript_text = ""
-            try:
-                config = types.GenerateContentConfig(
-                    audio_transcription_config=types.AudioTranscriptionConfig(
-                        word_timestamp=True,
-                        diarization=True
+            source_type = ""
+
+            if plugin_transcript and len(plugin_transcript) > 50:
+                transcript_text = plugin_transcript
+                source_type = "유튜브 자막 플러그인"
+                yield f"data: {json.dumps({'status': 'progress', 'message': '⚡ 유튜브 공식 자막을 고속으로 가져왔습니다!'})}\n\n"
+            else:
+                # 3단계: Gemini 3.5 Transcribe 오디오 STT
+                if not api_key:
+                    yield f"data: {json.dumps({'status': 'error', 'message': 'GEMINI_API_KEY가 설정되지 않았습니다.'})}\n\n"
+                    return
+
+                yield f"data: {json.dumps({'status': 'progress', 'message': '2/3 유튜브 오디오 스트림 다운로드 중...'})}\n\n"
+
+                file_id = str(uuid.uuid4())[:8]
+                out_template = os.path.join(DOWNLOAD_DIR, f"{file_id}_%(id)s.%(ext)s")
+
+                ydl_opts = {
+                    "format": "bestaudio/best",
+                    "outtmpl": out_template,
+                    "quiet": True,
+                    "no_warnings": True,
+                }
+                if FFMPEG_PATH:
+                    ydl_opts["ffmpeg_location"] = CONDA_FFMPEG_DIR
+                    ydl_opts["postprocessors"] = [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }]
+
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    expected_filename = ydl.prepare_filename(info)
+                    if FFMPEG_PATH:
+                        base, _ = os.path.splitext(expected_filename)
+                        if os.path.exists(f"{base}.mp3"):
+                            expected_filename = f"{base}.mp3"
+
+                file_path = expected_filename
+                mime_type = "audio/mp3" if file_path.endswith(".mp3") else "audio/mp4"
+
+                yield f"data: {json.dumps({'status': 'progress', 'message': '3/3 Gemini 3.5 Transcribe로 고정밀 음성 전사 중...'})}\n\n"
+
+                client = genai.Client(api_key=api_key)
+                with open(file_path, "rb") as f:
+                    audio_bytes = f.read()
+
+                audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
+                stt_prompt = (
+                    "Transcribe this entire audio in detail. "
+                    "Include speaker tags and precise timestamps for every sentence in [MM:SS] format. "
+                    "Output clear timestamps so moments can be accurately navigated."
+                )
+
+                try:
+                    config = types.GenerateContentConfig(
+                        audio_transcription_config=types.AudioTranscriptionConfig(
+                            word_timestamp=True,
+                            diarization=True
+                        )
                     )
-                )
-                response = client.models.generate_content(
-                    model="gemini-3.5-transcribe",
-                    contents=[audio_part, types.Part.from_text(text=stt_prompt)],
-                    config=config
-                )
-                transcript_text = response.text or ""
-            except Exception:
-                response = client.models.generate_content(
-                    model="gemini-3.6-flash",
-                    contents=[audio_part, types.Part.from_text(text=stt_prompt)]
-                )
-                transcript_text = response.text or ""
+                    response = client.models.generate_content(
+                        model="gemini-3.5-transcribe",
+                        contents=[audio_part, types.Part.from_text(text=stt_prompt)],
+                        config=config
+                    )
+                    transcript_text = response.text or ""
+                    source_type = "Gemini 3.5 STT"
+                except Exception:
+                    response = client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=[audio_part, types.Part.from_text(text=stt_prompt)]
+                    )
+                    transcript_text = response.text or ""
+                    source_type = "Gemini 3.6 Flash STT"
 
-            yield f"data: {json.dumps({'status': 'progress', 'message': '3/3 영상 주요 챕터 및 하이라이트 생성 중...'})}\n\n"
+            # 챕터 생성
+            yield f"data: {json.dumps({'status': 'progress', 'message': '✨ 영상 주요 하이라이트 챕터 생성 중...'})}\n\n"
 
-            chapter_prompt = f"""Based on this video transcript, extract 4 to 6 key highlights or chapters.
+            chapters_json = []
+            if api_key:
+                try:
+                    client = genai.Client(api_key=api_key)
+                    chapter_prompt = f"""Based on this video transcript, extract 4 to 6 key highlights or chapters.
 Return ONLY a valid JSON array of objects with the following schema:
 [
   {{
@@ -300,7 +394,7 @@ Return ONLY a valid JSON array of objects with the following schema:
     "timestamp_str": "MM:SS",
     "timestamp_seconds": 45,
     "category": "Topic or mood (e.g. 💡 핵심 요약, 🍕 음식, 🚗 여행, 🎬 하이라이트, ❤️ 리뷰)",
-    "color": "lavender" (choose from: "lavender", "sky", "lime", "peach", "pink"),
+    "color": "lavender",
     "summary": "1 sentence brief summary of what happened here"
   }}
 ]
@@ -308,43 +402,91 @@ Return ONLY a valid JSON array of objects with the following schema:
 Transcript:
 {transcript_text[:12000]}
 """
-            chapter_res = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=chapter_prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
-                )
-            )
+                    chapter_res = client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=chapter_prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json"
+                        )
+                    )
+                    chapters_json = json.loads(chapter_res.text)
+                except Exception:
+                    pass
 
-            chapters_json = []
-            try:
-                chapters_json = json.loads(chapter_res.text)
-            except Exception:
+            if not chapters_json:
                 chapters_json = [
                     {"title": "영상 시작", "timestamp_str": "00:00", "timestamp_seconds": 0, "category": "🎬 시작", "color": "lime", "summary": "영상의 도입부입니다."},
                     {"title": "주요 내용", "timestamp_str": "00:30", "timestamp_seconds": 30, "category": "💡 핵심", "color": "lavender", "summary": "영상에서 다루는 주요 포인트입니다."}
                 ]
 
-            # Save to CSV Database and in-memory Cache
+            # Save to CSV Database
             save_data = {
-                "video_id": actual_vid,
+                "video_id": video_id,
                 "url": url,
-                "title": info.get("title", "YouTube Video"),
-                "uploader": info.get("uploader", "YouTube"),
-                "duration": info.get("duration", 0),
-                "duration_string": info.get("duration_string", ""),
+                "title": video_title,
+                "uploader": video_uploader,
+                "duration": video_duration,
+                "duration_string": video_duration_str,
+                "source_type": source_type,
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "transcript": transcript_text,
                 "chapters": chapters_json,
+                "bookmarks": [],
             }
             save_transcript_to_csv(save_data)
 
-            yield f"data: {json.dumps({'status': 'done', 'video_id': actual_vid, 'transcript': transcript_text, 'chapters': chapters_json, 'cached': False, 'created_at': save_data['created_at']})}\n\n"
+            yield f"data: {json.dumps({'status': 'done', 'video_id': video_id, 'transcript': transcript_text, 'chapters': chapters_json, 'bookmarks': [], 'source_type': source_type, 'cached': False, 'created_at': save_data['created_at']})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/bookmarks/add")
+async def add_bookmark(request: BookmarkRequest):
+    """사용자가 직접 찍은 커스텀 타임스탬프 북마크 저장"""
+    vid = request.video_id
+    if vid not in TRANSCRIPT_CACHE:
+        TRANSCRIPT_CACHE[vid] = {
+            "video_id": vid,
+            "url": f"https://youtu.be/{vid}",
+            "title": "YouTube Video",
+            "uploader": "YouTube",
+            "duration": 0,
+            "duration_string": "",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "transcript": "",
+            "chapters": [],
+            "bookmarks": [],
+        }
+
+    bookmark_item = {
+        "id": str(uuid.uuid4())[:8],
+        "timestamp_seconds": request.timestamp_seconds,
+        "timestamp_str": request.timestamp_str,
+        "memo": request.memo or "중요한 순간",
+        "created_at": datetime.now().strftime("%H:%M:%S")
+    }
+
+    if "bookmarks" not in TRANSCRIPT_CACHE[vid]:
+        TRANSCRIPT_CACHE[vid]["bookmarks"] = []
+
+    TRANSCRIPT_CACHE[vid]["bookmarks"].append(bookmark_item)
+    save_transcript_to_csv(TRANSCRIPT_CACHE[vid])
+
+    return {"status": "ok", "bookmarks": TRANSCRIPT_CACHE[vid]["bookmarks"]}
+
+
+@app.post("/api/bookmarks/delete")
+async def delete_bookmark(video_id: str, bookmark_id: str):
+    """타임스탬프 북마크 삭제"""
+    if video_id in TRANSCRIPT_CACHE:
+        bookmarks = TRANSCRIPT_CACHE[video_id].get("bookmarks", [])
+        TRANSCRIPT_CACHE[video_id]["bookmarks"] = [b for b in bookmarks if b.get("id") != bookmark_id]
+        save_transcript_to_csv(TRANSCRIPT_CACHE[video_id])
+        return {"status": "ok", "bookmarks": TRANSCRIPT_CACHE[video_id]["bookmarks"]}
+    return {"status": "error", "message": "Video not found"}
 
 
 @app.post("/api/ask")
@@ -437,8 +579,10 @@ async def get_history():
             "title": item.get("title"),
             "uploader": item.get("uploader"),
             "duration_string": item.get("duration_string"),
+            "source_type": item.get("source_type", "Gemini 3.5 STT"),
             "created_at": item.get("created_at"),
             "chapters_count": len(item.get("chapters", [])),
+            "bookmarks_count": len(item.get("bookmarks", [])),
         })
     return {"count": len(items), "items": items}
 
