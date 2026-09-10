@@ -1,8 +1,9 @@
+import csv
 import json
 import os
 import re
 import uuid
-import mimetypes
+from datetime import datetime
 from typing import AsyncGenerator, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,8 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+CSV_FILE = os.path.join(BASE_DIR, "transcripts_database.csv")
+
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -34,8 +37,93 @@ app.mount("/downloads", StaticFiles(directory=DOWNLOAD_DIR), name="downloads")
 CONDA_FFMPEG_DIR = "/opt/anaconda3/envs/myenv/bin"
 FFMPEG_PATH = os.path.join(CONDA_FFMPEG_DIR, "ffmpeg") if os.path.exists(os.path.join(CONDA_FFMPEG_DIR, "ffmpeg")) else None
 
-# In-memory transcript storage by video_id
-TRANSCRIPT_STORE = {}
+CSV_HEADERS = [
+    "video_id",
+    "url",
+    "title",
+    "uploader",
+    "duration",
+    "duration_string",
+    "created_at",
+    "transcript",
+    "chapters_json"
+]
+
+
+def load_transcripts_from_csv() -> dict:
+    """CSV 파일에서 저장된 모든 트랜스크립트와 챕터 데이터를 읽어옵니다."""
+    cache = {}
+    if not os.path.exists(CSV_FILE):
+        return cache
+    try:
+        with open(CSV_FILE, mode="r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                vid = row.get("video_id")
+                if vid:
+                    chapters = []
+                    try:
+                        chapters = json.loads(row.get("chapters_json", "[]"))
+                    except Exception:
+                        pass
+                    cache[vid] = {
+                        "video_id": vid,
+                        "url": row.get("url", ""),
+                        "title": row.get("title", ""),
+                        "uploader": row.get("uploader", ""),
+                        "duration": int(row.get("duration", 0) or 0),
+                        "duration_string": row.get("duration_string", ""),
+                        "created_at": row.get("created_at", ""),
+                        "transcript": row.get("transcript", ""),
+                        "chapters": chapters,
+                    }
+    except Exception as e:
+        print(f"Error loading CSV cache: {e}")
+    return cache
+
+
+def save_transcript_to_csv(data: dict):
+    """트랜스크립트 및 챕터 정보를 CSV 파일에 저장하고 캐시를 업데이트합니다."""
+    vid = data.get("video_id")
+    if not vid:
+        return
+
+    TRANSCRIPT_CACHE[vid] = data
+
+    existing_rows = {}
+    if os.path.exists(CSV_FILE):
+        try:
+            with open(CSV_FILE, mode="r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                for r in reader:
+                    if r.get("video_id"):
+                        existing_rows[r["video_id"]] = r
+        except Exception:
+            pass
+
+    chapters_str = json.dumps(data.get("chapters", []), ensure_ascii=False)
+    row_dict = {
+        "video_id": vid,
+        "url": data.get("url", ""),
+        "title": data.get("title", ""),
+        "uploader": data.get("uploader", ""),
+        "duration": data.get("duration", 0),
+        "duration_string": data.get("duration_string", ""),
+        "created_at": data.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "transcript": data.get("transcript", ""),
+        "chapters_json": chapters_str,
+    }
+    existing_rows[vid] = row_dict
+
+    with open(CSV_FILE, mode="w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+        writer.writeheader()
+        for r in existing_rows.values():
+            writer.writerow(r)
+
+
+# Initialize Cache from CSV on server start
+TRANSCRIPT_CACHE = load_transcripts_from_csv()
 
 
 class VideoUrlRequest(BaseModel):
@@ -69,12 +157,13 @@ def extract_youtube_id(url: str) -> Optional[str]:
 
 @app.post("/api/info")
 async def get_video_info(request: VideoUrlRequest):
-    """유튜브 영상 정보 조회"""
+    """유튜브 영상 정보 조회 및 캐시 여부 반환"""
     url = request.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="유튜브 URL을 입력해주세요.")
 
     vid_id = extract_youtube_id(url)
+    cached_item = TRANSCRIPT_CACHE.get(vid_id) if vid_id else None
 
     ydl_opts = {
         "quiet": True,
@@ -95,34 +184,47 @@ async def get_video_info(request: VideoUrlRequest):
                 "duration_string": info.get("duration_string", ""),
                 "uploader": info.get("uploader", "Unknown Channel"),
                 "view_count": info.get("view_count", 0),
+                "is_cached": bool(video_id in TRANSCRIPT_CACHE),
             }
     except Exception as e:
         if vid_id:
             return {
                 "id": vid_id,
-                "title": "YouTube Video",
+                "title": cached_item["title"] if cached_item else "YouTube Video",
                 "thumbnail": f"https://img.youtube.com/vi/{vid_id}/maxresdefault.jpg",
-                "duration": 0,
-                "duration_string": "",
-                "uploader": "YouTube",
+                "duration": cached_item["duration"] if cached_item else 0,
+                "duration_string": cached_item["duration_string"] if cached_item else "",
+                "uploader": cached_item["uploader"] if cached_item else "YouTube",
                 "view_count": 0,
+                "is_cached": bool(vid_id in TRANSCRIPT_CACHE),
             }
         raise HTTPException(status_code=400, detail=f"영상 정보를 가져오지 못했습니다: {str(e)}")
 
 
 @app.post("/api/process_video")
 async def process_video(request: VideoUrlRequest):
-    """오디오 다운로드 및 Gemini 3.5 Transcribe STT + 챕터 추출 (SSE 스트리밍)"""
+    """오디오 다운로드 및 Gemini 3.5 Transcribe STT + 챕터 추출 (CSV 캐시 확인 후 즉시 반환)"""
     url = request.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="유튜브 URL을 입력해주세요.")
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY가 설정되지 않았습니다.")
+    video_id = extract_youtube_id(url)
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
+            # 1. Check if already cached in CSV
+            if video_id and video_id in TRANSCRIPT_CACHE and TRANSCRIPT_CACHE[video_id].get("transcript"):
+                cached = TRANSCRIPT_CACHE[video_id]
+                yield f"data: {json.dumps({'status': 'progress', 'message': '⚡ 이미 저장된 트랜스크립트(CSV 데이터베이스)에서 즉시 불러왔습니다!'})}\n\n"
+                yield f"data: {json.dumps({'status': 'done', 'video_id': video_id, 'transcript': cached['transcript'], 'chapters': cached['chapters'], 'cached': True, 'created_at': cached.get('created_at', '')})}\n\n"
+                return
+
+            # 2. If not cached, proceed to download and transcribe
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                yield f"data: {json.dumps({'status': 'error', 'message': 'GEMINI_API_KEY가 설정되지 않았습니다.'})}\n\n"
+                return
+
             yield f"data: {json.dumps({'status': 'progress', 'message': '1/3 유튜브 오디오 스트림 추출 중...'})}\n\n"
 
             file_id = str(uuid.uuid4())[:8]
@@ -150,7 +252,7 @@ async def process_video(request: VideoUrlRequest):
                     if os.path.exists(f"{base}.mp3"):
                         expected_filename = f"{base}.mp3"
 
-            video_id = info.get("id") or extract_youtube_id(url)
+            actual_vid = info.get("id") or video_id
             file_path = expected_filename
             mime_type = "audio/mp3" if file_path.endswith(".mp3") else "audio/mp4"
 
@@ -167,7 +269,6 @@ async def process_video(request: VideoUrlRequest):
                 "Output clear timestamps so moments can be accurately navigated."
             )
 
-            # Transcribe with Gemini 3.5
             transcript_text = ""
             try:
                 config = types.GenerateContentConfig(
@@ -183,20 +284,14 @@ async def process_video(request: VideoUrlRequest):
                 )
                 transcript_text = response.text or ""
             except Exception:
-                # Fallback to flash multimodal
                 response = client.models.generate_content(
                     model="gemini-3.6-flash",
                     contents=[audio_part, types.Part.from_text(text=stt_prompt)]
                 )
                 transcript_text = response.text or ""
 
-            # Store in cache
-            TRANSCRIPT_STORE[video_id] = transcript_text
-
-            yield f"data: {json.dumps({'status': 'transcript', 'text': transcript_text})}\n\n"
             yield f"data: {json.dumps({'status': 'progress', 'message': '3/3 영상 주요 챕터 및 하이라이트 생성 중...'})}\n\n"
 
-            # Extract 4-6 pastel chapter cards
             chapter_prompt = f"""Based on this video transcript, extract 4 to 6 key highlights or chapters.
 Return ONLY a valid JSON array of objects with the following schema:
 [
@@ -230,7 +325,21 @@ Transcript:
                     {"title": "주요 내용", "timestamp_str": "00:30", "timestamp_seconds": 30, "category": "💡 핵심", "color": "lavender", "summary": "영상에서 다루는 주요 포인트입니다."}
                 ]
 
-            yield f"data: {json.dumps({'status': 'done', 'video_id': video_id, 'transcript': transcript_text, 'chapters': chapters_json})}\n\n"
+            # Save to CSV Database and in-memory Cache
+            save_data = {
+                "video_id": actual_vid,
+                "url": url,
+                "title": info.get("title", "YouTube Video"),
+                "uploader": info.get("uploader", "YouTube"),
+                "duration": info.get("duration", 0),
+                "duration_string": info.get("duration_string", ""),
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "transcript": transcript_text,
+                "chapters": chapters_json,
+            }
+            save_transcript_to_csv(save_data)
+
+            yield f"data: {json.dumps({'status': 'done', 'video_id': actual_vid, 'transcript': transcript_text, 'chapters': chapters_json, 'cached': False, 'created_at': save_data['created_at']})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
@@ -245,7 +354,8 @@ async def ask_question(request: AskQuestionRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY가 설정되지 않았습니다.")
 
-    transcript = request.transcript or TRANSCRIPT_STORE.get(request.video_id, "")
+    cached = TRANSCRIPT_CACHE.get(request.video_id, {})
+    transcript = request.transcript or cached.get("transcript", "")
     if not transcript:
         raise HTTPException(status_code=400, detail="해당 영상의 트랜스크립트 데이터가 없습니다. 먼저 영상 분석을 진행해주세요.")
 
@@ -274,7 +384,6 @@ Return your answer in the following JSON format:
 
     try:
         client = genai.Client(api_key=api_key)
-        # Try gemini-3.8-flash, fallback to gemini-3.6-flash
         model_name = "gemini-3.8-flash"
         try:
             res = client.models.generate_content(
@@ -300,6 +409,38 @@ Return your answer in the following JSON format:
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI 답변 생성 중 오류: {str(e)}")
+
+
+@app.get("/api/download_csv")
+async def download_csv():
+    """저장된 전체 트랜스크립트 CSV 파일 다운로드"""
+    if not os.path.exists(CSV_FILE):
+        with open(CSV_FILE, mode="w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+            writer.writeheader()
+    return FileResponse(
+        CSV_FILE,
+        media_type="text/csv",
+        filename="youtube_transcripts_database.csv",
+        headers={"Content-Disposition": "attachment; filename=youtube_transcripts_database.csv"}
+    )
+
+
+@app.get("/api/history")
+async def get_history():
+    """CSV에 저장된 영상 목록 조회"""
+    items = []
+    for vid, item in TRANSCRIPT_CACHE.items():
+        items.append({
+            "video_id": vid,
+            "url": item.get("url"),
+            "title": item.get("title"),
+            "uploader": item.get("uploader"),
+            "duration_string": item.get("duration_string"),
+            "created_at": item.get("created_at"),
+            "chapters_count": len(item.get("chapters", [])),
+        })
+    return {"count": len(items), "items": items}
 
 
 if __name__ == "__main__":

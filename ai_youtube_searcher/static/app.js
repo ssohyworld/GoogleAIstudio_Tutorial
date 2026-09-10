@@ -228,8 +228,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 currentChapters = data.chapters || [];
                 renderChapters(currentChapters);
 
-                sttBadge.textContent = "Gemini 3.5 STT 완료 ✓";
-                sttBadge.className = "text-xs font-bold px-3 py-1 rounded-full bg-emerald-100 text-emerald-800";
+                if (data.cached) {
+                  sttBadge.textContent = "⚡ CSV 캐시 불러옴 (토큰 0)";
+                  sttBadge.className = "text-xs font-bold px-3 py-1 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200";
+                } else {
+                  sttBadge.textContent = "Gemini 3.5 STT 완료 ✓ (CSV 저장됨)";
+                  sttBadge.className = "text-xs font-bold px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200";
+                }
                 videoLoadingOverlay.classList.add("hidden");
               } else if (data.status === "error") {
                 throw new Error(data.message);
