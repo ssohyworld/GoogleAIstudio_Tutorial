@@ -193,7 +193,10 @@ class BookmarkRequest(BaseModel):
 
 @app.get("/")
 async def root():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    return FileResponse(
+        os.path.join(STATIC_DIR, "index.html"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
 
 
 def extract_youtube_id(url: str) -> Optional[str]:

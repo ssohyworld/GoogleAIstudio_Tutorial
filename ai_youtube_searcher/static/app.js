@@ -1,9 +1,11 @@
 /**
- * AI YouTube Searcher Pro — Unified YouTube-Style Controller
- * - Silent Duplicate Guard
- * - Unified Right Panel (AI Q&A Tab & YouTube Chapters / Line-by-Line Transcript Tab)
- * - Interactive Timestamp Stamping & Bookmarking
- * - Gemini 3.8 Flash Video Navigation
+ * Auralis AI — Multimodal Video Searcher & Telemetry Hub Controller
+ * - Theme Switcher (Dark Cyber Lime, Midnight Violet, Light Porcelain)
+ * - YouTube IFrame API & postMessage sync
+ * - SSE Streaming Video Processing & Transcripts
+ * - Chapters & 10-Second Interval Segmented Transcripts
+ * - Saved Keyframe Bookmarks & Memo Notes
+ * - Gemini 3.8 Flash Multimodal Q&A with Timestamp Jump CTA
  */
 
 let ytPlayer = null;
@@ -13,6 +15,29 @@ let currentChapters = [];
 let currentBookmarks = [];
 let isProcessing = false;
 let pendingTimestampSeconds = 0;
+
+// Theme Controller (Dark & Light)
+function setTheme(theme) {
+  const root = document.documentElement;
+  const btnDark = document.getElementById("btn-theme-dark");
+  const btnLight = document.getElementById("btn-theme-light");
+
+  [btnDark, btnLight].forEach((b) => b && b.classList.remove("active"));
+
+  if (theme === "light") {
+    theme = "light";
+    root.className = "light";
+    if (btnLight) btnLight.classList.add("active");
+  } else {
+    // default dark (Midnight Violet)
+    theme = "dark";
+    root.className = "dark";
+    if (btnDark) btnDark.classList.add("active");
+  }
+
+  localStorage.setItem("auralis_theme", theme);
+}
+window.setThemeGlobal = (theme) => setTheme(theme);
 
 // YouTube IFrame API Ready
 window.onYouTubeIframeAPIReady = function () {
@@ -102,13 +127,23 @@ function extractVideoId(url) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  lucide.createIcons();
+  // Initialize Theme from localStorage (default to dark)
+  const savedTheme = localStorage.getItem("auralis_theme") || "dark";
+  setTheme(savedTheme);
+
+  // Theme switch buttons event binding
+  const btnDark = document.getElementById("btn-theme-dark");
+  const btnLight = document.getElementById("btn-theme-light");
+
+  if (btnDark) btnDark.addEventListener("click", () => setTheme("dark"));
+  if (btnLight) btnLight.addEventListener("click", () => setTheme("light"));
 
   // DOM Elements
   const youtubeUrlInput = document.getElementById("youtubeUrlInput");
   const searchVideoBtn = document.getElementById("searchVideoBtn");
   const ytIframe = document.getElementById("ytIframe");
   const historyChipsContainer = document.getElementById("historyChipsContainer");
+  const targetUrlDisplay = document.getElementById("targetUrlDisplay");
 
   const displayVideoTitle = document.getElementById("displayVideoTitle");
   const displayVideoChannel = document.getElementById("displayVideoChannel");
@@ -150,31 +185,25 @@ document.addEventListener("DOMContentLoaded", () => {
   const jumpActionSection = document.getElementById("jumpActionSection");
   const copyTranscriptBtn = document.getElementById("copyTranscriptBtn");
 
-  // Tab Switch Function
+  // Tab Switcher
   function switchTab(activeTab) {
-    // Reset all tabs
     [tabAiBtn, tabChaptersBtn, tabTranscriptBtn].forEach((btn) => {
-      btn.classList.remove("active");
-      btn.classList.add("text-stone-600");
+      btn.className = "flex-1 py-2 px-2 rounded-xl font-label-sm text-xs text-center transition-all text-[var(--text-muted)] hover:text-[var(--text-main)] flex items-center justify-center gap-1.5 font-bold cursor-pointer";
     });
     [panelAiSection, panelChaptersSection, panelTranscriptSection].forEach((panel) => {
       panel.classList.add("hidden");
     });
 
     if (activeTab === "ai") {
-      tabAiBtn.classList.add("active");
-      tabAiBtn.classList.remove("text-stone-600");
+      tabAiBtn.className = "flex-1 py-2 px-2 rounded-xl font-label-sm text-xs text-center transition-all bg-[var(--accent-purple)] text-white shadow-[0_0_12px_var(--accent-purple-glow)] flex items-center justify-center gap-1.5 font-bold cursor-pointer";
       panelAiSection.classList.remove("hidden");
     } else if (activeTab === "chapters") {
-      tabChaptersBtn.classList.add("active");
-      tabChaptersBtn.classList.remove("text-stone-600");
+      tabChaptersBtn.className = "flex-1 py-2 px-2 rounded-xl font-label-sm text-xs text-center transition-all bg-[var(--accent-purple)] text-white shadow-[0_0_12px_var(--accent-purple-glow)] flex items-center justify-center gap-1.5 font-bold cursor-pointer";
       panelChaptersSection.classList.remove("hidden");
     } else if (activeTab === "transcript") {
-      tabTranscriptBtn.classList.add("active");
-      tabTranscriptBtn.classList.remove("text-stone-600");
+      tabTranscriptBtn.className = "flex-1 py-2 px-2 rounded-xl font-label-sm text-xs text-center transition-all bg-[var(--accent-purple)] text-white shadow-[0_0_12px_var(--accent-purple-glow)] flex items-center justify-center gap-1.5 font-bold cursor-pointer";
       panelTranscriptSection.classList.remove("hidden");
     }
-    lucide.createIcons();
   }
 
   tabAiBtn.addEventListener("click", () => switchTab("ai"));
@@ -197,7 +226,12 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // Silent Duplicate Guard: 이미 로드되어 활성화된 동일 영상인 경우 토스트/알림 없이 조용히 무시
+    // Update Target URL display
+    if (targetUrlDisplay) {
+      targetUrlDisplay.textContent = url.replace("https://", "").replace("http://", "");
+    }
+
+    // Silent Duplicate Guard
     if (nextVid === currentVideoId && currentTranscript && ytIframe.src.includes(nextVid)) {
       return;
     }
@@ -210,7 +244,7 @@ document.addEventListener("DOMContentLoaded", () => {
     ytIframe.src = `https://www.youtube-nocookie.com/embed/${nextVid}?enablejsapi=1&playsinline=1&rel=0`;
 
     searchVideoBtn.disabled = true;
-    searchVideoBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-stone-900 border-t-transparent rounded-full"></span><span>분석 중...</span>`;
+    searchVideoBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full"></span><span>분석 중...</span>`;
     videoLoadingOverlay.classList.remove("hidden");
     loadingStatusText.textContent = "영상 메타데이터 및 자막 정보 확인 중...";
 
@@ -230,7 +264,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 2. Process Video (SSE Stream)
     sttBadge.textContent = "분석 진행 중...";
-    sttBadge.className = "text-xs font-bold px-3 py-1 rounded-full bg-amber-100 text-amber-800";
+    sttBadge.className = "inline-flex px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 font-telemetry-tag text-[10px] uppercase font-bold";
 
     try {
       const processRes = await fetch("/api/process_video", {
@@ -275,14 +309,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 // Source Type Badge
                 const src = data.source_type || (data.cached ? "CSV 캐시" : "Gemini 3.5 STT");
                 if (src.includes("플러그인") || src.includes("자막")) {
-                  sttBadge.textContent = "⚡ 유튜브 자막 플러그인 (토큰 0)";
-                  sttBadge.className = "text-xs font-bold px-3 py-1 rounded-full bg-blue-100 text-blue-800 border border-blue-200";
+                  sttBadge.textContent = "⚡ 유튜브 자막 플러그인 (토큰 0 소모)";
+                  sttBadge.className = "inline-flex px-2 py-0.5 rounded bg-[var(--accent-lime-bg)] text-[var(--accent-lime-text)] border border-[var(--accent-lime)]/30 font-telemetry-tag text-[10px] uppercase font-bold";
                 } else if (data.cached || src.includes("캐시")) {
-                  sttBadge.textContent = "⚡ CSV 캐시 불러옴 (토큰 0)";
-                  sttBadge.className = "text-xs font-bold px-3 py-1 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200";
+                  sttBadge.textContent = "⚡ CSV 캐시 불러옴 (토큰 0 소모)";
+                  sttBadge.className = "inline-flex px-2 py-0.5 rounded bg-purple-500/20 text-[var(--accent-purple)] border border-[var(--accent-purple)]/30 font-telemetry-tag text-[10px] uppercase font-bold";
                 } else {
-                  sttBadge.textContent = "✨ Gemini 3.5 STT 완료";
-                  sttBadge.className = "text-xs font-bold px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200";
+                  sttBadge.textContent = "✨ Gemini 3.5 STT 전사 완료";
+                  sttBadge.className = "inline-flex px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-telemetry-tag text-[10px] uppercase font-bold";
                 }
 
                 videoLoadingOverlay.classList.add("hidden");
@@ -297,13 +331,12 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       alert(`오류: ${err.message}`);
       sttBadge.textContent = "오류 발생";
-      sttBadge.className = "text-xs font-bold px-3 py-1 rounded-full bg-rose-100 text-rose-800";
+      sttBadge.className = "inline-flex px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 font-telemetry-tag text-[10px] uppercase font-bold";
       videoLoadingOverlay.classList.add("hidden");
     } finally {
       isProcessing = false;
       searchVideoBtn.disabled = false;
-      searchVideoBtn.innerHTML = `<span>영상 로드 & AI 분석</span><i data-lucide="arrow-right" class="w-4 h-4"></i>`;
-      lucide.createIcons();
+      searchVideoBtn.innerHTML = `<span class="material-symbols-outlined text-[16px]">search</span><span>분석</span>`;
     }
   }
 
@@ -325,7 +358,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const isActive = item.video_id === currentVideoId;
             btn.className = `history-chip ${isActive ? "active" : ""}`;
             btn.title = item.title;
-            btn.innerHTML = `<span>${item.title || item.video_id}</span>`;
+            btn.innerHTML = `
+              <span class="material-symbols-outlined text-[13px] text-[var(--accent-purple)]">play_arrow</span>
+              <span class="truncate">${item.title || item.video_id}</span>
+            `;
             btn.addEventListener("click", () => {
               if (item.url) handleSearch(item.url);
             });
@@ -336,10 +372,10 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (e) {}
   }
 
-  // 2. Render Chapters in Tab 2 (주요 목차)
+  // 2. Render Chapters in Tab 2
   function renderChapters(chapters) {
     if (!chapters || chapters.length === 0) {
-      chaptersContainer.innerHTML = `<p class="text-xs text-stone-400 italic p-3">목차 데이터가 없습니다.</p>`;
+      chaptersContainer.innerHTML = `<p class="text-xs text-[var(--text-muted)] italic p-3">목차 데이터가 없습니다.</p>`;
       if (chapterCountBadge) chapterCountBadge.textContent = "0개 챕터";
       return;
     }
@@ -352,19 +388,19 @@ document.addEventListener("DOMContentLoaded", () => {
       card.className = "chapter-card flex items-center justify-between gap-3 group";
       card.innerHTML = `
         <div class="flex items-start gap-3 overflow-hidden">
-          <div class="w-6 h-6 rounded-lg bg-indigo-50 text-indigo-700 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
+          <div class="w-6 h-6 rounded-lg bg-[var(--bg-surface-high)] text-[var(--accent-purple)] font-bold text-xs flex items-center justify-center shrink-0 mt-0.5 border border-[var(--border-subtle)] font-telemetry-timestamp">
             ${idx + 1}
           </div>
           <div class="overflow-hidden space-y-0.5">
             <div class="flex items-center gap-1.5 flex-wrap">
-              <span class="text-xs font-bold text-stone-900 group-hover:text-indigo-600 transition truncate">${ch.title}</span>
-              ${ch.category ? `<span class="text-[10px] px-2 py-0.5 rounded-md bg-stone-100 text-stone-600 font-medium">${ch.category}</span>` : ""}
+              <span class="text-xs font-bold text-[var(--text-main)] group-hover:text-[var(--accent-purple)] transition truncate">${ch.title}</span>
+              ${ch.category ? `<span class="text-[10px] px-2 py-0.5 rounded bg-[var(--bg-surface-high)] text-[var(--text-muted)] font-telemetry-tag">${ch.category}</span>` : ""}
             </div>
-            ${ch.summary ? `<p class="text-[11px] text-stone-500 line-clamp-2">${ch.summary}</p>` : ""}
+            ${ch.summary ? `<p class="text-[11px] text-[var(--text-muted)] line-clamp-2">${ch.summary}</p>` : ""}
           </div>
         </div>
         <button class="ts-badge shrink-0 px-2.5 py-1 text-xs" title="해당 시간으로 이동">
-          <i data-lucide="play" class="w-3 h-3 fill-lime-300"></i>
+          <span class="material-symbols-outlined text-[13px]">play_arrow</span>
           <span>${ch.timestamp_str}</span>
         </button>
       `;
@@ -372,7 +408,6 @@ document.addEventListener("DOMContentLoaded", () => {
       card.addEventListener("click", () => seekAndPlay(sec));
       chaptersContainer.appendChild(card);
     });
-    lucide.createIcons();
   }
 
   // 3. Render 10-Second Interval Segmented Transcript in Tab 3
@@ -380,7 +415,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function renderInteractiveTranscript(transcriptText) {
     if (!transcriptText) {
-      transcriptInteractiveList.innerHTML = `<p class="text-xs text-stone-400 italic p-3">대본 데이터가 없습니다.</p>`;
+      transcriptInteractiveList.innerHTML = `<p class="text-xs text-[var(--text-muted)] italic p-3">대본 데이터가 없습니다.</p>`;
       if (transcriptLineCount) transcriptLineCount.textContent = "0개 구간 (10초 단위)";
       return;
     }
@@ -409,7 +444,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const hasTimestamps = rawItems.some((item) => item.sec >= 0);
 
     if (hasTimestamps) {
-      // Group into 10-second intervals
       const bucketMap = new Map();
 
       rawItems.forEach((item) => {
@@ -440,7 +474,6 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       });
     } else {
-      // Plain text: Split by sentences and distribute across 10-second slots
       const fullText = rawItems.map((it) => it.text).join(" ");
       const sentences = fullText.split(/(?<=[.?!])\s+/).filter((s) => s.trim().length > 0);
       const totalBuckets = Math.max(1, Math.min(Math.ceil(sentences.length / 2), 12));
@@ -471,25 +504,25 @@ document.addEventListener("DOMContentLoaded", () => {
   function displayFilteredTranscript(intervals) {
     transcriptInteractiveList.innerHTML = "";
     if (intervals.length === 0) {
-      transcriptInteractiveList.innerHTML = `<p class="text-xs text-stone-400 italic p-3">일치하는 대본 내용이 없습니다.</p>`;
+      transcriptInteractiveList.innerHTML = `<p class="text-xs text-[var(--text-muted)] italic p-3">일치하는 대본 내용이 없습니다.</p>`;
       return;
     }
 
     intervals.forEach((item, idx) => {
       const row = document.createElement("div");
-      row.className = "transcript-line group flex items-start gap-3 p-3 bg-white hover:bg-stone-50 border border-stone-200 hover:border-stone-300 rounded-xl cursor-pointer transition shadow-xs";
+      row.className = "transcript-line group flex items-start gap-3 p-3 rounded-xl cursor-pointer transition shadow-sm";
       row.innerHTML = `
         <div class="flex flex-col items-center gap-1 shrink-0">
-          <span class="transcript-ts font-mono text-[11px] font-bold px-2 py-1 rounded-md bg-stone-900 text-[#d8f967]">
+          <span class="transcript-ts font-telemetry-timestamp text-[10px] font-bold px-2 py-0.5 rounded bg-[var(--bg-surface-highest)] text-[var(--accent-lime)] border border-[var(--border-subtle)]">
             ⏱️ ${item.rangeStr}
           </span>
-          <span class="text-[10px] text-stone-400 font-medium">#${idx + 1} 구간</span>
+          <span class="text-[10px] text-[var(--text-dim)] font-telemetry-tag">#${idx + 1} 구간</span>
         </div>
-        <div class="flex-1 text-xs text-stone-800 leading-relaxed font-medium">
+        <div class="flex-1 text-xs text-[var(--text-main)] leading-relaxed font-medium">
           ${item.text}
         </div>
-        <button class="shrink-0 p-1.5 rounded-lg bg-stone-100 group-hover:bg-[#d8f967] group-hover:text-stone-900 text-stone-500 transition self-center" title="이 10초 구간 재생">
-          <i data-lucide="play" class="w-3.5 h-3.5 fill-current"></i>
+        <button class="shrink-0 p-1.5 rounded-lg bg-[var(--bg-surface-high)] group-hover:bg-[var(--accent-purple)] group-hover:text-white text-[var(--text-muted)] transition self-center" title="이 10초 구간 재생">
+          <span class="material-symbols-outlined text-[14px]">play_arrow</span>
         </button>
       `;
 
@@ -501,7 +534,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
       transcriptInteractiveList.appendChild(row);
     });
-    lucide.createIcons();
   }
 
   // Keyword filter in transcript tab
@@ -579,9 +611,9 @@ document.addEventListener("DOMContentLoaded", () => {
       pill.className = "bookmark-pill group";
       pill.innerHTML = `
         <span class="ts-badge cursor-pointer" data-sec="${bm.timestamp_seconds}">▶ ${bm.timestamp_str}</span>
-        <span class="text-xs font-semibold text-stone-800 cursor-pointer select-none" data-sec="${bm.timestamp_seconds}">${bm.memo}</span>
-        <button class="text-stone-300 hover:text-rose-500 transition ml-1 p-0.5 cursor-pointer delete-bm" data-id="${bm.id}" title="삭제">
-          <i data-lucide="x" class="w-3 h-3"></i>
+        <span class="text-xs font-semibold text-[var(--text-main)] cursor-pointer select-none" data-sec="${bm.timestamp_seconds}">${bm.memo}</span>
+        <button class="text-[var(--text-dim)] hover:text-rose-500 transition ml-1 p-0.5 cursor-pointer delete-bm" data-id="${bm.id}" title="삭제">
+          <span class="material-symbols-outlined text-[14px]">close</span>
         </button>
       `;
 
@@ -595,8 +627,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
       bookmarksContainer.appendChild(pill);
     });
-
-    lucide.createIcons();
   }
 
   async function deleteBookmark(bmId) {
@@ -626,8 +656,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     askAiBtn.disabled = true;
-    askAiBtn.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-stone-900 border-t-transparent rounded-full"></span>`;
-    aiAnswerText.innerHTML = `<span class="text-stone-400 italic">Gemini 3.8 Flash가 대본에서 답변과 타임스탬프를 탐색 중입니다...</span>`;
+    askAiBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full"></span>`;
+    aiAnswerText.innerHTML = `<span class="text-[var(--text-muted)] italic font-telemetry-tag">Gemini 3.8 Flash가 대본에서 답변과 타임스탬프를 탐색 중입니다...</span>`;
     jumpActionSection.classList.add("hidden");
 
     try {
@@ -656,22 +686,21 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       if (data.matched_quote) {
-        formattedAnswer += `<div class="mt-3 p-2.5 bg-stone-100 rounded-xl border border-stone-200 text-[11px] text-stone-600 font-mono"><strong>💡 대본 인용:</strong> "${data.matched_quote}"</div>`;
+        formattedAnswer += `<div class="mt-3 p-2.5 bg-[var(--bg-surface-high)] rounded-xl border border-[var(--border-subtle)] text-[11px] text-[var(--text-main)] font-telemetry-tag"><strong>💡 대본 인용:</strong> "${data.matched_quote}"</div>`;
       }
 
       aiAnswerText.innerHTML = formattedAnswer;
 
       if (data.target_seconds !== undefined && data.target_seconds !== null) {
-        jumpButtonText.textContent = `${data.timestamp_str || formatSeconds(data.target_seconds)} 장면 재생`;
+        jumpButtonText.textContent = `▶ ${data.timestamp_str || formatSeconds(data.target_seconds)} 장면으로 즉시 점프 & 재생하기`;
         jumpNowBtn.onclick = () => seekAndPlay(data.target_seconds);
         jumpActionSection.classList.remove("hidden");
       }
     } catch (err) {
-      aiAnswerText.innerHTML = `<span class="text-rose-600 font-semibold">오류: ${err.message}</span>`;
+      aiAnswerText.innerHTML = `<span class="text-rose-500 font-semibold">오류: ${err.message}</span>`;
     } finally {
       askAiBtn.disabled = false;
-      askAiBtn.innerHTML = `<span>검색</span><i data-lucide="send" class="w-3 h-3"></i>`;
-      lucide.createIcons();
+      askAiBtn.innerHTML = `<span class="material-symbols-outlined text-[18px]">send</span>`;
     }
   }
 
@@ -682,7 +711,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.querySelectorAll(".quick-q-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      aiQuestionInput.value = btn.textContent.trim();
+      aiQuestionInput.value = btn.textContent.trim().replace(/^[✨⏱️]\s*/, "");
       handleAiAsk(btn.textContent.trim());
     });
   });
@@ -699,3 +728,4 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initial Auto-load for default video
   handleSearch("https://youtu.be/QgaTjRH5sqk?si=EGdE5B1OIF3aCJEg");
 });
+
